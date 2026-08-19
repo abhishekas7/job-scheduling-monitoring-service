@@ -40,18 +40,7 @@ To guarantee correctness under heavy parallel load across multiple asynchronous 
 
 ---
 
-### R7: Persistent State & Service Restart Recovery
-> **Requirement R7:** State and history must survive a restart of the service.
 
-#### Mechanics:
-- All runner states, job states, and historical transitions are persisted to MongoDB (`Job`, `Runner`, `Event` collections).
-- On server startup, `schedulerService.recoverOnStartup()` runs automatically before accepting traffic:
-  1. Audits any stale or expired runner claims (`claimExpiresAt <= now`) caused by a crash or downtime.
-  2. Resets orphaned runners back to `IDLE` and re-queues associated jobs.
-  3. Audits and resolves expired cleanup timers.
-  4. Triggers background queue dispatch.
-
----
 
 ## Verification & Demonstration
 
