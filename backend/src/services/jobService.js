@@ -4,6 +4,7 @@ const schedulerService = require("./schedulerService");
 const runnerService = require("./runnerService");
 
 class JobService {
+  //fetch all jobs
   async getAllJobs(queryFilters = {}) {
     const filter = {};
     if (queryFilters.state) {
@@ -14,7 +15,7 @@ class JobService {
     }
     return await Job.find(filter).sort({ createdAt: -1 });
   }
-
+  
   async createJob(jobData) {
     const { jobId, payload } = jobData;
     const generatedJobId = jobId || `job-${Date.now()}`;

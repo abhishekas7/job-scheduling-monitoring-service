@@ -1,36 +1,104 @@
 # Job Scheduling & Monitoring Service
 
-A robust Node.js and MongoDB backend service for managing job scheduling, dispatching, and monitoring across multi-state runners with concurrency controls, idempotent retries, and persistent state recovery.
+A robust Node.js and MongoDB backend service for managing job scheduling, dispatching, and monitoring across multi-state runners with strict concurrency controls, idempotent request retries, and persistent state recovery across service restarts.
 
 ---
 
-## Getting Started
+## Key Requirement Compliance & Architecture
+
+### R5: Single Job Assignment Concurrency Safeguard (Critical Requirement)
+> **Requirement R5:** A runner must never be given two jobs at once. Jobs submitted at the exact same instant must not both find the same idle runner under concurrent load.
+
+#### Concurrency Mechanism:
+To guarantee correctness under heavy parallel load across multiple asynchronous threads or processes, our dispatch engine relies on a multi-tiered atomic locking mechanism:
+1. **Atomic Compound Query (`findOneAndUpdate`)**: When dispatching a job, the scheduler does not use separate read-then-write steps. Instead, it issues a single atomic MongoDB `findOneAndUpdate` query:
+   ```javascript
+   await Runner.findOneAndUpdate(
+     { _id: runnerId, state: "IDLE", currentJobId: null },
+     { $set: { state: "CLAIMED", currentJobId: jobId, claimExpiresAt: new Date(Date.now() + 5000) } },
+     { returnDocument: "after" }
+   );
+   ```
+   Because MongoDB executes updates single-threaded per document, if two jobs attempt to claim the same idle runner simultaneously, exactly **one** update will succeed. The losing request receives `null` and instantly retries or yields, ensuring zero race conditions.
+
+2. **Single-Job Invariant**: A runner is only eligible for assignment if `state == "IDLE"` **and** `currentJobId == null`. As soon as a job is claimed, `currentJobId` is atomically set, preventing any other concurrent operation from selecting that runner.
+
+3. **In-Memory Queue Mutex**: Within each Node process instance, an internal execution flag (`this._isProcessing`) prevents overlapping queue dispatch loops from racing with themselves.
+
+---
+
+### R6: Idempotent Handling & Retries
+> **Requirement R6:** Requests may be retried — the same job reported finished twice, or acknowledged after it was already cancelled. Handle it without corrupting state.
+
+#### Mechanics:
+1. **Duplicate Completion (`finishJob`)**:
+   - If a runner or client calls `finishJob` on an already `COMPLETED` or `FAILED` job, the service returns the existing job state immediately without modifying timestamps or triggering redundant cleanup events.
+2. **Finish / Ack on Cancelled Jobs**:
+   - If a completion or start acknowledgement is received for a job that was already `CANCELLED`, the service preserves the `CANCELLED` state on the job while safely releasing the assigned runner (setting runner to `CLEANUP` / `IDLE`). An audit log event (`FINISH_RECEIVED_ON_CANCELLED_JOB`) is generated for visibility.
+3. **Idempotent Job Creation**:
+   - Submitting a job with an existing `jobId` returns the existing record rather than throwing duplicate key errors or corrupting state.
+
+---
+
+### R7: Persistent State & Service Restart Recovery
+> **Requirement R7:** State and history must survive a restart of the service.
+
+#### Mechanics:
+- All runner states, job states, and historical transitions are persisted to MongoDB (`Job`, `Runner`, `Event` collections).
+- On server startup, `schedulerService.recoverOnStartup()` runs automatically before accepting traffic:
+  1. Audits any stale or expired runner claims (`claimExpiresAt <= now`) caused by a crash or downtime.
+  2. Resets orphaned runners back to `IDLE` and re-queues associated jobs.
+  3. Audits and resolves expired cleanup timers.
+  4. Triggers background queue dispatch.
+
+---
+
+## Verification & Demonstration
+
+To demonstrate correctness under concurrent load, run the automated test suite:
+
+```bash
+cd backend
+npm test
+```
+
+### What the test suite demonstrates:
+1. **Concurrent Load (R5)**: Submits multiple jobs at the exact same instant against an idle runner and verifies that **at most 1 job** is claimed, leaving remaining jobs queued without race conditions.
+2. **Duplicate Finish Idempotency (R6)**: Executes repeated finish requests on the same job and verifies state & timestamps remain uncorrupted.
+3. **Retries on Cancelled Jobs (R6)**: Cancels a job, sends a finish request, and verifies `CANCELLED` state is preserved while the runner is freed.
+4. **Service Restart Recovery (R7)**: Simulates a service crash during an active claim, runs `recoverOnStartup()`, and verifies persistent state recovery.
+
+---
+
+## Setup & Running Locally
 
 ### 1. Install Dependencies
-Navigate to the `backend` directory and install project dependencies:
 ```bash
 cd backend
 npm install
 ```
 
-### 2. Database Configuration
-Create a `.env` file in the `backend` directory (if not already present):
+### 2. Environment Configuration
+Create a `.env` file in the `backend` directory:
 ```env
 PORT=5000
 MONGO_URI=mongodb://localhost:27017/job-scheduling-db
 ```
 
 ### 3. Seed Initial Data
-Populate MongoDB with default runners, jobs, and audit event logs:
 ```bash
 npm run seed
 ```
 
-### 4. Start Development Server
+### 4. Run Demonstration Test Suite
+```bash
+npm test
+```
+
+### 5. Start Development Server
 ```bash
 npm run dev
 ```
-The server will run at `http://localhost:5000`.
 
 ---
 
@@ -38,8 +106,8 @@ The server will run at `http://localhost:5000`.
 
 ### Job States
 - `QUEUED`: Submitted and waiting to be claimed by an available idle runner.
-- `CLAIMED`: Assigned to an idle runner with a 5-minute TTL claim.
-- `RUNNING`: Acknowledged by the runner and currently executing.
+- `CLAIMED`: Assigned to an idle runner with a claim TTL.
+- `RUNNING`: Acknowledged by the runner and executing.
 - `CLEANUP`: Execution completed; runner performing teardown tasks.
 - `COMPLETED`: Execution finished successfully.
 - `FAILED`: Execution finished with an error.
@@ -47,7 +115,7 @@ The server will run at `http://localhost:5000`.
 
 ### Runner States
 - `OFFLINE`: Disconnected or unreachable.
-- `IDLE`: Online, healthy, and ready to take a job.
+- `IDLE`: Online, healthy, and ready to accept a job.
 - `CLAIMED`: Reserved for a queued job.
 - `RUNNING`: Actively processing a job.
 - `CLEANUP`: Performing post-job cleanup before returning to `IDLE`.
@@ -62,7 +130,7 @@ Base URL: `http://localhost:5000`
 ### Health Check
 
 #### `GET /api/health`
-Checks whether the backend server is running.
+Checks backend server status.
 
 **Response (200 OK):**
 ```json
@@ -105,7 +173,7 @@ Fetch all jobs with optional filtering.
 ```
 
 #### 2. `POST /api/jobs`
-Submit a new job to the queue. Automatically triggers queue dispatching. Supports idempotent submission if identical `jobId` is passed.
+Submit a new job. Automatically triggers queue dispatching.
 
 **Request Body:**
 ```json
