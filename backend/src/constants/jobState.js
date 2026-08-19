@@ -1,0 +1,10 @@
+const JOB_STATES = Object.freeze({
+  QUEUED: "QUEUED",
+  CLAIMED: "CLAIMED",
+  RUNNING: "RUNNING",
+  CLEANUP: "CLEANUP",
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+});
+
+module.exports = JOB_STATES;

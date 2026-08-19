@@ -1,0 +1,10 @@
+const RUNNER_STATES = Object.freeze({
+  OFFLINE: "OFFLINE",
+  IDLE: "IDLE",
+  CLAIMED: "CLAIMED",
+  RUNNING: "RUNNING",
+  CLEANUP: "CLEANUP",
+  DRAINING: "DRAINING",
+});
+
+module.exports = RUNNER_STATES;
