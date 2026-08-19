@@ -7,6 +7,7 @@ const JOB_STATES = [
   "CLEANUP",
   "COMPLETED",
   "FAILED",
+  "CANCELLED",
 ];
 
 const jobSchema = new mongoose.Schema(
